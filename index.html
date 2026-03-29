@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Liva'nın Uzay Kaçış Oyunu 🚀</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #000; font-family: 'Courier New', monospace; overflow: hidden; color: white; }
+        canvas { display: block; width: 100vw; height: 100vh; cursor: none; }
+        #ui { position: absolute; top: 15px; left: 15px; z-index: 10; font-size: 26px; text-shadow: 0 0 15px #0f0; }
+        #skinGallery {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 820px; background: rgba(0,10,40,0.95); border: 3px solid #0ff;
+            border-radius: 15px; padding: 20px; display: none; z-index: 30;
+            box-shadow: 0 0 40px #0ff;
+        }
+        .skinCard {
+            display: inline-block; width: 180px; margin: 8px; padding: 12px;
+            background: rgba(255,255,255,0.1); border-radius: 10px; text-align: center;
+            cursor: pointer; transition: all 0.2s;
+        }
+        .skinCard:hover { transform: scale(1.08); background: rgba(255,255,255,0.25); }
+        .skinCard.locked { opacity: 0.6; cursor: not-allowed; }
+        .lock { font-size: 42px; display: block; margin-bottom: 8px; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        Skor: <span id="score">0</span><br>
+        Can: <span id="lives">3</span> ❤️<br>
+        En Yüksek: <span id="highscore">0</span><br>
+        Combo: <span id="combo">0</span>x
+    </div>
+
+    <div id="skinGallery">
+        <h2 style="text-align:center; color:#0ff; margin-bottom:15px;">🚀 SKIN GALERİSİ</h2>
+        <div id="skinsContainer"></div>
+        <p style="text-align:center; margin-top:15px; font-size:14px;">S tuşu ile kapat</p>
+    </div>
+
+    <div id="gameOver" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; z-index:50;">
+        <h1>Oyun Bitti! 💥</h1>
+        <p>Skorun: <span id="finalScore">0</span></p>
+        <button onclick="restart()" style="font-size:22px; padding:15px 40px;">Yeniden Başla 🚀</button>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const livesEl = document.getElementById('lives');
+        const highscoreEl = document.getElementById('highscore');
+        const comboEl = document.getElementById('combo');
+        const gameOverEl = document.getElementById('gameOver');
+        const finalScoreEl = document.getElementById('finalScore');
+        const gallery = document.getElementById('skinGallery');
+
+        function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+        window.addEventListener('resize', resize); resize();
+
+        let gameState = 'playing';
+        let score = 0, highscore = parseInt(localStorage.getItem('spaceHighscore')) || 0;
+        highscoreEl.textContent = highscore;
+        let lives = 3, gameTime = 0, comboCount = 0;
+
+        // Skin Sistemi - Sadece Default açık, diğerleri kilitli + açılma puanları
+        let unlockedSkins = JSON.parse(localStorage.getItem('unlockedSkins')) || [true, false, false, false, false, false];
+        let currentSkin = 0;
+
+        const skins = [
+            { 
+                id: 0, 
+                name: "Default Gemi", 
+                film: "Klasik Uzay", 
+                color: "#00ff88", 
+                bg: "stars", 
+                feature: "Normal",
+                unlockScore: 0 
+            },
+            { 
+                id: 1, 
+                name: "Millennium Falcon", 
+                film: "Star Wars", 
+                color: "#ffaa00", 
+                bg: "solarsystem", 
+                feature: "Hızlı Ateş",
+                unlockScore: 900 
+            },
+            { 
+                id: 2, 
+                name: "USS Enterprise", 
+                film: "Star Trek", 
+                color: "#00ccff", 
+                bg: "milkyway", 
+                feature: "Hızlı Hareket",
+                unlockScore: 1800 
+            },
+            { 
+                id: 3, 
+                name: "Endurance", 
+                film: "Interstellar", 
+                color: "#aaff00", 
+                bg: "andromeda", 
+                feature: "+1 Can",
+                unlockScore: 3200 
+            },
+            { 
+                id: 4, 
+                name: "X-Wing", 
+                film: "Star Wars", 
+                color: "#ff3333", 
+                bg: "stars", 
+                feature: "Agresif Ateş",
+                unlockScore: 4800 
+            },
+            { 
+                id: 5, 
+                name: "Nostromo", 
+                film: "Alien", 
+                color: "#bbbbbb", 
+                bg: "milkyway", 
+                feature: "Dayanıklılık",
+                unlockScore: 7000 
+            }
+        ];
+
+        const player = { x: canvas.width/2-25, y: canvas.height-100, w: 52, h: 42, vx: 0, baseSpeed: 8, lastMove: Date.now() };
+
+        let bullets = [], meteors = [], particles = [], keys = {};
+
+        window.addEventListener('keydown', e => {
+            keys[e.code] = true;
+            if (e.code === 'KeyS') toggleGallery();
+            if (e.code === 'Space') fire();
+        });
+        window.addEventListener('keyup', e => keys[e.code] = false);
+
+        canvas.addEventListener('click', fire);
+        canvas.addEventListener('touchstart', e => { e.preventDefault(); fire(); }, {passive:false});
+
+        let fireCooldown = 0;
+        const FIRE_COOLDOWN_TIME = 750;
+
+        function fire() {
+            if (fireCooldown > 0 || gameState !== 'playing') return;
+            const cd = (currentSkin === 1) ? 4 : 8;
+            bullets.push({x: player.x + player.w/2 - 3, y: player.y, w:6, h:18, speed:12});
+            fireCooldown = cd;
+            playSound(850, 0.07);
+        }
+
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playSound(f, d) {
+            const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+            o.connect(g); g.connect(audioCtx.destination);
+            o.frequency.value = f; o.type = 'sawtooth';
+            g.gain.value = 0.4;
+            g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + d);
+            o.start(); o.stop(audioCtx.currentTime + d);
+        }
+
+        function createParticles(x, y, color) {
+            for (let i = 0; i < 25; i++) {
+                particles.push({x, y, vx:(Math.random()-0.5)*14, vy:(Math.random()-0.5)*14, life:40, color});
+            }
+        }
+
+        function collide(a, b) {
+            return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+        }
+
+        function spawnMeteor() {
+            meteors.push({
+                x: Math.random()*(canvas.width-60), y: -60,
+                w: 42 + Math.random()*28, h: 42 + Math.random()*28,
+                vx: (Math.random()-0.5)*2.5, speed: 2.4 + Math.floor(gameTime/500)
+            });
+        }
+
+        function spawnTargetedMeteor() {
+            meteors.push({x: player.x + player.w/2 - 25, y: -80, w:52, h:52, vx:0, speed:4.5});
+            createParticles(player.x + player.w/2, 120, '#f33');
+        }
+
+        function calculateScore() {
+            const minutes = gameTime / 60;
+            const sessionMult = Math.max(0.75, 3.2 - minutes * 0.04);
+            const comboMult = Math.min(4.5, 1 + comboCount * 0.35);
+            const base = minutes * 22 + bullets.length * 8;
+            
+            let rawScore = base * comboMult * sessionMult;
+
+            if (rawScore > 3000) {
+                rawScore = 3000 + (rawScore - 3000) * 0.50;
+            } else if (rawScore > 1700) {
+                rawScore = 1700 + (rawScore - 1700) * 0.75;
+            }
+
+            return Math.floor(rawScore);
+        }
+
+        function update() {
+            if (gameState !== 'playing') return;
+            gameTime++;
+
+            score = calculateScore();
+            scoreEl.textContent = score;
+            comboEl.textContent = comboCount;
+
+            // Skin özelliği
+            player.speed = (currentSkin === 2) ? player.baseSpeed * 1.4 : player.baseSpeed;
+
+            // Highscore + Skin Unlock Kontrolü
+            if (score > highscore) {
+                highscore = score;
+                highscoreEl.textContent = highscore;
+
+                // Yeni skin açma kontrolü
+                for (let i = 1; i < skins.length; i++) {
+                    if (!unlockedSkins[i] && score >= skins[i].unlockScore) {
+                        unlockedSkins[i] = true;
+                        createParticles(canvas.width/2, 180, skins[i].color); // Açılma efekti
+                        // İstersen burada bildirim sesi de eklenebilir
+                    }
+                }
+
+                localStorage.setItem('unlockedSkins', JSON.stringify(unlockedSkins));
+            }
+
+            // Hareket
+            player.vx = 0;
+            if (keys['ArrowLeft'] || keys['KeyA']) player.vx = -player.speed;
+            if (keys['ArrowRight'] || keys['KeyD']) player.vx = player.speed;
+            player.x += player.vx;
+            player.x = Math.max(0, Math.min(canvas.width - player.w, player.x));
+
+            if (Math.abs(player.vx) < 1) {
+                if (Date.now() - player.lastMove > 2000) {
+                    spawnTargetedMeteor();
+                    player.lastMove = Date.now();
+                }
+            } else player.lastMove = Date.now();
+
+            if (fireCooldown > 0) fireCooldown--;
+            if (keys['Space']) fire();
+
+            bullets = bullets.filter(b => { b.y -= b.speed; return b.y > -30; });
+
+            if (gameTime % 70 === 0) spawnMeteor();
+
+            meteors = meteors.filter(m => {
+                m.y += m.speed; m.x += m.vx; m.vx *= 0.96;
+                return m.y < canvas.height + 100;
+            });
+
+            // Bullet vs Meteor
+            for (let i = bullets.length-1; i >= 0; i--) {
+                for (let j = meteors.length-1; j >= 0; j--) {
+                    if (collide(bullets[i], meteors[j])) {
+                        comboCount++;
+                        createParticles(meteors[j].x + meteors[j].w/2, meteors[j].y + meteors[j].h/2, '#ff0');
+                        bullets.splice(i,1);
+                        meteors.splice(j,1);
+                        playSound(220, 0.15);
+                        break;
+                    }
+                }
+            }
+
+            // Player vs Meteor
+            for (let j = meteors.length-1; j >= 0; j--) {
+                if (collide(player, meteors[j])) {
+                    comboCount = 0;
+                    createParticles(player.x + player.w/2, player.y + player.h/2, '#f00');
+                    meteors.splice(j,1);
+                    lives--;
+                    livesEl.textContent = lives;
+                    if (lives <= 0) gameOver();
+                    break;
+                }
+            }
+
+            particles = particles.filter(p => { p.x += p.vx; p.y += p.vy; p.life--; return p.life > 0; });
+        }
+
+        function drawBackground() {
+            const bg = skins[currentSkin].bg;
+            ctx.fillStyle = 'rgba(0,4,40,0.15)';
+            ctx.fillRect(0,0,canvas.width,canvas.height);
+
+            if (bg === "solarsystem") {
+                ctx.fillStyle = '#ffaa00';
+                ctx.beginPath(); ctx.arc(canvas.width*0.75, 120, 35, 0, Math.PI*2); ctx.fill();
+            } else if (bg === "milkyway") {
+                ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.ellipse(canvas.width/2, canvas.height/2, canvas.width*0.6, 80, gameTime*0.001, 0, Math.PI*2);
+                ctx.stroke();
+            } else if (bg === "andromeda") {
+                ctx.fillStyle = '#88aaff';
+                for (let i = 0; i < 80; i++) {
+                    ctx.fillRect((i*23 + gameTime*0.3)%canvas.width, (i*17)%canvas.height, 2, 2);
+                }
+            } else {
+                ctx.fillStyle = '#fff';
+                for (let i = 0; i < 180; i++) {
+                    const x = (gameTime*0.1 + i*31) % canvas.width;
+                    ctx.fillRect(x, (i*19)%canvas.height, 1.8, 1.8);
+                }
+            }
+        }
+
+        function draw() {
+            drawBackground();
+
+            ctx.save();
+            ctx.translate(player.x + player.w/2, player.y + player.h/2);
+            ctx.fillStyle = skins[currentSkin].color;
+            ctx.shadowBlur = 25; ctx.shadowColor = skins[currentSkin].color;
+            ctx.beginPath();
+            ctx.moveTo(0, -26);
+            ctx.lineTo(-22, 20);
+            ctx.lineTo(-11, 13);
+            ctx.lineTo(11, 13);
+            ctx.lineTo(22, 20);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+
+            ctx.fillStyle = '#ffff00';
+            bullets.forEach(b => ctx.fillRect(b.x, b.y, b.w, b.h));
+
+            meteors.forEach(m => {
+                ctx.save();
+                ctx.translate(m.x + m.w/2, m.y + m.h/2);
+                ctx.rotate(gameTime * 0.05);
+                ctx.fillStyle = '#c66';
+                ctx.fillRect(-m.w/2, -m.h/2, m.w, m.h);
+                ctx.restore();
+            });
+
+            particles.forEach(p => {
+                ctx.globalAlpha = p.life / 40;
+                ctx.fillStyle = p.color;
+                ctx.fillRect(p.x-3, p.y-3, 6, 6);
+            });
+            ctx.globalAlpha = 1;
+        }
+
+        function loop() {
+            update(); draw(); requestAnimationFrame(loop);
+        }
+
+        function toggleGallery() {
+            if (gallery.style.display === 'block') {
+                gallery.style.display = 'none';
+                return;
+            }
+            const container = document.getElementById('skinsContainer');
+            container.innerHTML = '';
+            skins.forEach(s => {
+                const isUnlocked = unlockedSkins[s.id];
+                const card = document.createElement('div');
+                card.className = `skinCard ${!isUnlocked ? 'locked' : ''}`;
+                card.innerHTML = `
+                    ${!isUnlocked ? `<span class="lock">🔒</span><br><small style="color:#f66">(${s.unlockScore} puan)</small>` : ''}
+                    <div style="height:90px; background:#112; margin-bottom:8px; border-radius:8px; position:relative;">
+                        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:${s.color}; font-size:38px;">🚀</div>
+                    </div>
+                    <b>${s.name}</b><br>
+                    <small>${s.film}</small><br>
+                    <small style="color:#0f0">${s.feature}</small>
+                `;
+                if (isUnlocked) {
+                    card.onclick = () => {
+                        currentSkin = s.id;
+                        gallery.style.display = 'none';
+                    };
+                }
+                container.appendChild(card);
+            });
+            gallery.style.display = 'block';
+        }
+
+        function gameOver() {
+            gameState = 'gameOver';
+            if (score > highscore) {
+                highscore = score;
+                localStorage.setItem('spaceHighscore', highscore);
+            }
+            finalScoreEl.textContent = Math.floor(score);
+            gameOverEl.style.display = 'block';
+        }
+
+        function restart() {
+            gameState = 'playing';
+            score = 0; 
+            comboCount = 0;
+            lives = (currentSkin === 3) ? 4 : 3;
+            gameTime = 0;
+            bullets = []; 
+            meteors = []; 
+            particles = [];
+            player.x = canvas.width/2 - 25;
+            player.lastMove = Date.now();
+            gameOverEl.style.display = 'none';
+            livesEl.textContent = lives;
+        }
+
+        loop();
+    </script>
+</body>
+</html>
